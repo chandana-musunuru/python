@@ -24,7 +24,7 @@ jobs:
 
       - name: Run scraper
         run: |
-          python script.py
+          python job_scraper.py 
 
       - name: Upload output
         uses: actions/upload-artifact@v3
