@@ -348,7 +348,7 @@ def print_summary(results):
 #  MAIN
 # ─────────────────────────────────────────
 def main():
-    config  = load_config("ats_config.json")
+    config  = load_config("JobScraper/ats_config.json")
     filters = config["filters"]
     hours   = filters["hours_limit"]
 
