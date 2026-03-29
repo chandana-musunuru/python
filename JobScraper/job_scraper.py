@@ -14,7 +14,6 @@ from functools import wraps
 
 # =============================================================================
 #  STEP 1 — LOGGING SETUP
-#  Replaces all print() with proper logging to console + file
 # =============================================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 # =============================================================================
 #  STEP 2 — LOAD & VALIDATE CONFIG
-#  Catches bad config before scraping starts
 # =============================================================================
 def load_config(path="ats_config.json"):
     with open(path, "r") as f:
@@ -56,7 +54,7 @@ def validate_config(config):
         name = ats.get("name", "?")
         for key in required_ats:
             if ats.get("fetch_type") == "workday_post":
-                break          # workday uses different fields — skip generic check
+                break
             if key not in ats:
                 errors.append(f"ATS '{name}' missing field: '{key}'")
 
@@ -122,7 +120,6 @@ PYTHON_KEYWORDS = [
 ]
 
 def classify_job(title):
-    """Returns 'Java', 'Python', or 'Software'. Java > Python > Software priority."""
     t = title.lower()
     if any(k in t for k in JAVA_KEYWORDS):
         return "Java"
@@ -305,7 +302,6 @@ def matches_keywords(title, include_kws, exclude_kws):
 
 # =============================================================================
 #  STEP 8 — DUPLICATE DETECTION ACROSS RUNS
-#  Saves seen job hashes to disk so repeat jobs are skipped next run
 # =============================================================================
 SEEN_JOBS_FILE = "seen_jobs.json"
 
@@ -320,7 +316,6 @@ def save_seen_jobs(seen):
         json.dump(list(seen), f)
 
 def job_hash(job):
-    """Unique fingerprint per job — title + company + url."""
     key = f"{job['title']}_{job['company']}_{job['apply_url']}"
     return hashlib.md5(key.encode()).hexdigest()
 
@@ -340,8 +335,7 @@ def filter_new_jobs(all_jobs, seen_jobs):
 
 
 # =============================================================================
-#  STEP 9 — JOB SCORING BY RELEVANCE
-#  Scores jobs based on your preferences in config
+#  STEP 9 — JOB SCORING
 # =============================================================================
 def score_job(job, preferences):
     if not preferences:
@@ -373,7 +367,6 @@ def score_job(job, preferences):
 
 # =============================================================================
 #  STEP 10 — RETRY DECORATOR
-#  Retries failed requests up to 3 times with exponential backoff
 # =============================================================================
 def retry(max_attempts=3, delay=2):
     def decorator(func):
@@ -386,11 +379,9 @@ def retry(max_attempts=3, delay=2):
                         return result
                 except Exception as e:
                     if attempt == max_attempts - 1:
-                        logger.warning(
-                            f"Failed after {max_attempts} attempts: {e}"
-                        )
+                        logger.warning(f"Failed after {max_attempts} attempts: {e}")
                         return None
-                time.sleep(delay * (2 ** attempt))  # 2s, 4s, 8s
+                time.sleep(delay * (2 ** attempt))
             return None
         return wrapper
     return decorator
@@ -398,22 +389,15 @@ def retry(max_attempts=3, delay=2):
 
 # =============================================================================
 #  STEP 11 — ASYNC FETCH STRATEGIES
-#  Fetches all companies concurrently — ~10x faster than sequential
 # =============================================================================
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-@retry(max_attempts=3, delay=2)
-def fetch_rest_get_sync(url):
-    """Sync fallback for non-async paths."""
-    import requests
-    r = requests.get(url, timeout=12, headers=HEADERS)
-    return r.json() if r.status_code == 200 else None
-
 async def fetch_rest_get_async(session, url):
-    """Async GET with retry."""
     for attempt in range(3):
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as r:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=12)
+            ) as r:
                 if r.status == 200:
                     return await r.json(content_type=None)
         except Exception as e:
@@ -447,10 +431,6 @@ async def fetch_graphql_async(session, url, query, company):
     return None
 
 async def fetch_workday_async(session, ats, company_obj, filters):
-    """
-    Workday uses POST with keyword search.
-    Searches multiple keywords and deduplicates across them.
-    """
     slug     = company_obj["slug"]
     instance = company_obj["instance"]
     site     = company_obj["site"]
@@ -513,10 +493,10 @@ async def fetch_workday_async(session, ats, company_obj, filters):
                             "apply_url": apply_url,
                             "score":     0
                         })
-                    break   # success — don't retry
+                    break
             except Exception as e:
                 if attempt == 2:
-                    logger.warning(f"Workday failed {display} / {keyword}: {e}")
+                    logger.warning(f"Workday failed {display}/{keyword}: {e}")
                 await asyncio.sleep(2 ** attempt)
 
     return all_matched
@@ -524,14 +504,13 @@ async def fetch_workday_async(session, ats, company_obj, filters):
 
 # =============================================================================
 #  STEP 12 — PAGINATION SUPPORT
-#  Fetches ALL pages not just the first page (for REST APIs that support it)
 # =============================================================================
 async def fetch_paginated_async(session, base_url, jobs_key, page_size=50):
     all_jobs = []
     offset   = 0
 
     while True:
-        sep = "&" if "?" in base_url else "?"
+        sep  = "&" if "?" in base_url else "?"
         url  = f"{base_url}{sep}limit={page_size}&offset={offset}"
         data = await fetch_rest_get_async(session, url)
 
@@ -547,10 +526,10 @@ async def fetch_paginated_async(session, base_url, jobs_key, page_size=50):
         all_jobs.extend(jobs)
 
         if len(jobs) < page_size:
-            break   # last page reached
+            break
 
         offset += page_size
-        await asyncio.sleep(0.3)   # polite delay between pages
+        await asyncio.sleep(0.3)
 
     return all_jobs
 
@@ -567,10 +546,10 @@ def parse_jobs(jobs_list, ats, company_display, filters, preferences=None):
         url       = get_field(job, ats["url_field"]) or ""
         posted_at = parse_date(date_raw, ats["date_format"])
 
-        if not is_within_hours(posted_at, filters["hours_limit"]):         continue
+        if not is_within_hours(posted_at, filters["hours_limit"]):      continue
         if not matches_keywords(title, filters["keywords"],
-                                filters["exclude_keywords"]):              continue
-        if not is_usa_location(str(location)):                             continue
+                                filters["exclude_keywords"]):           continue
+        if not is_usa_location(str(location)):                          continue
 
         job_entry = {
             "category":  classify_job(title),
@@ -580,7 +559,8 @@ def parse_jobs(jobs_list, ats, company_display, filters, preferences=None):
             "state":     extract_state(str(location)),
             "location":  str(location),
             "posted_at": (
-                posted_at.strftime("%Y-%m-%d %H:%M UTC") if posted_at else "Unknown"
+                posted_at.strftime("%Y-%m-%d %H:%M UTC")
+                if posted_at else "Unknown"
             ),
             "apply_url": url,
             "score":     0
@@ -593,7 +573,6 @@ def parse_jobs(jobs_list, ats, company_display, filters, preferences=None):
 
 # =============================================================================
 #  STEP 14 — ASYNC MAIN FETCH ROUTER
-#  Routes each company to the right fetch strategy concurrently
 # =============================================================================
 async def fetch_jobs_async(session, ats, company, filters, preferences=None):
     ftype = ats.get("fetch_type", "rest_get")
@@ -612,15 +591,12 @@ async def fetch_jobs_async(session, ats, company, filters, preferences=None):
             return []
         return parse_jobs(jobs_list, ats, company_display, filters, preferences)
 
-    # REST GET — use pagination
-    url = ats["base_url"].replace("{company}", company_slug)
+    url      = ats["base_url"].replace("{company}", company_slug)
     jobs_key = ats.get("jobs_key")
 
     if ats.get("paginated"):
-        # Paginated REST — fetch all pages
         jobs_list = await fetch_paginated_async(session, url, jobs_key)
     else:
-        # Single page REST
         data = await fetch_rest_get_async(session, url)
         if data is None:
             return []
@@ -633,15 +609,11 @@ async def fetch_jobs_async(session, ats, company, filters, preferences=None):
 
 
 async def run_all_fetches(config):
-    """
-    Runs all company fetches concurrently using asyncio.
-    All companies fetched at the same time — massive speed improvement.
-    """
     filters     = config["filters"]
     preferences = config.get("preferences")
     all_jobs    = []
 
-    connector = aiohttp.TCPConnector(limit=20)   # max 20 concurrent connections
+    connector = aiohttp.TCPConnector(limit=20)
     async with aiohttp.ClientSession(
         connector=connector, headers=HEADERS
     ) as session:
@@ -649,9 +621,8 @@ async def run_all_fetches(config):
         for ats in config["ats_sources"]:
             ats_name  = ats["name"]
             companies = ats["companies"]
-            logger.info(f"[{ats_name}] — {len(companies)} companies (concurrent fetch)")
+            logger.info(f"[{ats_name}] — {len(companies)} companies")
 
-            # Create one task per company — all run at the same time
             tasks = [
                 fetch_jobs_async(session, ats, company, filters, preferences)
                 for company in companies
@@ -664,12 +635,17 @@ async def run_all_fetches(config):
                     continue
                 if not jobs:
                     jobs = []
+
                 display = (
                     company["display"]
                     if isinstance(company, dict)
                     else company.upper()
                 )
-                logger.info(f"  {display:<30} {len(jobs)} found")
+
+                # Only log companies where jobs were actually found — no "none" noise
+                if jobs:
+                    logger.info(f"  {display:<30} {len(jobs)} found")
+
                 all_jobs.extend(jobs)
 
     return all_jobs
@@ -688,14 +664,14 @@ def organize_jobs(all_jobs):
         state = job.get("state") or "Other USA"
         result[cat].setdefault(state, []).append(job)
 
-    # Sort jobs within each state by score descending
     for cat in CATEGORIES:
         for state in result[cat]:
-            result[cat][state].sort(key=lambda x: x.get("score", 0), reverse=True)
+            result[cat][state].sort(
+                key=lambda x: x.get("score", 0), reverse=True
+            )
 
-    # Sort states: alpha → Other USA → Remote
     for cat in CATEGORIES:
-        states = result[cat]
+        states        = result[cat]
         sorted_states = sorted([
             s for s in states if s not in ("Remote", "Other USA")
         ])
@@ -709,7 +685,7 @@ def organize_jobs(all_jobs):
 
 
 # =============================================================================
-#  STEP 16 — PRINT RESULTS
+#  STEP 16 — PRINT RESULTS (console — jobs found only)
 # =============================================================================
 def print_results(organized):
     total = sum(
@@ -767,7 +743,6 @@ def print_summary(organized):
 
 # =============================================================================
 #  STEP 17 — EMAIL NOTIFICATION
-#  Sends email when new jobs are found (configure in ats_config.json)
 # =============================================================================
 def send_email_notification(new_jobs, config):
     email_cfg = config.get("email")
@@ -775,11 +750,10 @@ def send_email_notification(new_jobs, config):
         return
 
     body = (
-        f"Found {len(new_jobs)} new USA Java/Python/SWE jobs!\n"
+        f"Found {len(new_jobs)} new USA jobs!\n"
         f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
     )
-
-    for job in new_jobs[:30]:   # cap at 30 in email
+    for job in new_jobs[:30]:
         body += f"{'=' * 50}\n"
         body += f"Title    : {job['title']}\n"
         body += f"Company  : {job['company']}\n"
@@ -789,10 +763,10 @@ def send_email_notification(new_jobs, config):
         body += f"Posted   : {job['posted_at']}\n"
         body += f"Apply    : {job['apply_url']}\n\n"
 
-    msg             = MIMEMultipart()
-    msg["From"]     = email_cfg["sender"]
-    msg["To"]       = email_cfg["recipient"]
-    msg["Subject"]  = (
+    msg            = MIMEMultipart()
+    msg["From"]    = email_cfg["sender"]
+    msg["To"]      = email_cfg["recipient"]
+    msg["Subject"] = (
         f"{len(new_jobs)} New Jobs — "
         f"{datetime.now().strftime('%Y-%m-%d')}"
     )
@@ -810,7 +784,7 @@ def send_email_notification(new_jobs, config):
 # =============================================================================
 #  STEP 18 — SAVE OUTPUT JSON
 # =============================================================================
-def save_output(organized, all_new_jobs):
+def save_output(organized):
     sorted_jobs = []
     for cat in CATEGORIES:
         for state, jobs in organized[cat].items():
@@ -842,43 +816,31 @@ async def main_async():
     logger.info("Job scraper starting...")
     logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-    # Step 1 — Load and validate config
-    config = load_config("ats_config.json")
+    config = load_config("JobScraper/ats_config.json")
     validate_config(config)
 
-    # Step 2 — Load previously seen jobs (duplicate detection)
     seen_jobs = load_seen_jobs()
     logger.info(f"Loaded {len(seen_jobs)} previously seen job hashes")
 
-    # Step 3 — Fetch all jobs concurrently (async)
     start    = time.time()
     all_jobs = await run_all_fetches(config)
     elapsed  = time.time() - start
     logger.info(f"Fetched {len(all_jobs)} total jobs in {elapsed:.1f}s")
 
-    # Step 4 — Score jobs by preference
     preferences = config.get("preferences")
     if preferences:
         all_jobs = [score_job(j, preferences) for j in all_jobs]
-        logger.info("Jobs scored by preference")
 
-    # Step 5 — Filter out already seen jobs
     new_jobs = filter_new_jobs(all_jobs, seen_jobs)
 
-    # Step 6 — Organize by category and state
     organized = organize_jobs(new_jobs)
 
-    # Step 7 — Print to console
     print_results(organized)
     print_summary(organized)
 
-    # Step 8 — Save seen jobs back to disk
     save_seen_jobs(seen_jobs)
+    save_output(organized)
 
-    # Step 9 — Save output JSON
-    save_output(organized, new_jobs)
-
-    # Step 10 — Send email notification
     send_email_notification(new_jobs, config)
 
     logger.info("Done!")
@@ -888,4 +850,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
