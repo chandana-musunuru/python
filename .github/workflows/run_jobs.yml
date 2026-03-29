@@ -2,12 +2,13 @@ name: Job Scraper Schedule
 
 on:
   schedule:
-    - cron: '0 */12 * * *'  # every 12 hours
-  workflow_dispatch:  # optional manual trigger
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
 
 jobs:
   run_scraper:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -20,14 +21,54 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install -r JobScraper/requirements.txt
+
+      - name: Create config file
+        run: echo '${{ secrets.ATS_CONFIG }}' > JobScraper/ats_config.json
 
       - name: Run scraper
-        run: |
-          python JobScraper/job_scraper.py
+        run: python JobScraper/job_scraper.py
 
-      - name: Upload output
-        uses: actions/upload-artifact@v4
-        with:
-          name: jobs-output
-          path: jobs_output.json
+      - name: Write job summary
+        run: |
+          python - <<'EOF'
+          import json, os
+
+          with open("jobs_output.json") as f:
+              data = json.load(f)
+
+          all_jobs = data.get("all_jobs", [])
+          total    = len(all_jobs)
+
+          # Group by category
+          categories = {}
+          for job in all_jobs:
+              cat = job.get("category", "Software")
+              categories.setdefault(cat, []).append(job)
+
+          summary = []
+          summary.append("## Job Scraper Results")
+          summary.append(f"**Total USA Jobs Found: {total}**\n")
+
+          if total == 0:
+              summary.append("No new jobs found in last 24h.")
+          else:
+              for cat, jobs in categories.items():
+                  summary.append(f"### {cat} ({len(jobs)} jobs)")
+                  summary.append("| # | Title | Company | Location | Posted |")
+                  summary.append("|---|-------|---------|----------|--------|")
+                  for i, job in enumerate(jobs, 1):
+                      title    = job.get("title", "")
+                      company  = job.get("company", "")
+                      location = job.get("location", "")
+                      posted   = job.get("posted_at", "")
+                      url      = job.get("apply_url", "")
+                      summary.append(
+                          f"| {i} | [{title}]({url}) | {company} | {location} | {posted} |"
+                      )
+                  summary.append("")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "w") as f:
+              f.write("\n".join(summary))
+
+          EOF
